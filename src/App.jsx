@@ -1,0 +1,660 @@
+import React, { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import Sidebar from './components/Sidebar';
+import Header from './components/Header';
+import Toast from './components/Toast';
+
+// Import existing and new pages
+import LandingPage from './pages/LandingPage';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import AdminLoginPage from './pages/AdminLoginPage';
+import UserDashboardPage from './pages/UserDashboardPage';
+import MunicipalLoginPage from './pages/MunicipalLoginPage';
+import MunicipalRegisterPage from './pages/MunicipalRegisterPage';
+import MunicipalDashboardPage from './pages/MunicipalDashboardPage';
+
+import DashboardPage from './pages/DashboardPage';
+import RoadAnalysisPage from './pages/RoadAnalysisPage';
+import GisMapPage from './pages/GisMapPage';
+import ComplaintsPage from './pages/ComplaintsPage';
+import WaterloggingPage from './pages/WaterloggingPage';
+import MaintenancePage from './pages/MaintenancePage';
+import AnalyticsPage from './pages/AnalyticsPage';
+import SettingsPage from './pages/SettingsPage';
+import RoadexPage from './pages/RoadexPage';
+import AgentControlCenterPage from './pages/AgentControlCenterPage';
+
+import ProtectedRoute from './components/ProtectedRoute';
+
+import { INITIAL_DEFECTS, INITIAL_COMPLAINTS, INITIAL_WORK_ORDERS } from './data/mockData';
+
+// API helper — reads token from localStorage
+const apiCall = (path, options = {}) => {
+  const token = localStorage.getItem('roadnex_token');
+  return fetch(path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+};
+
+export default function App() {
+  return (
+    <Router>
+      <AppContent />
+    </Router>
+  );
+}
+
+function AppContent() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const [defects, setDefects] = useState(INITIAL_DEFECTS);
+  const [complaints, setComplaints] = useState(INITIAL_COMPLAINTS);
+  const [workOrders, setWorkOrders] = useState(INITIAL_WORK_ORDERS);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
+  const [toastType, setToastType] = useState('success');
+
+  const [notifications, setNotifications] = useState([
+    {
+      id: 1,
+      title: 'Critical Pothole Flagged',
+      message: 'RD-1050 on Cyber City Phase 2 flagged with 98% AI confidence.',
+      time: '10 min ago',
+      type: 'critical'
+    },
+    {
+      id: 2,
+      title: 'Complaint Auto-Merged',
+      message: 'Citizen report C-2041 merged into RD-1042 (93% similarity).',
+      time: '25 min ago',
+      type: 'info'
+    },
+    {
+      id: 3,
+      title: 'Work Order Completed',
+      message: 'WO-1072 marked completed by City Municipal Team B.',
+      time: '1 hour ago',
+      type: 'success'
+    }
+  ]);
+
+  // Load theme on mount
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('roadnex_theme') || 'light';
+    if (savedTheme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, []);
+
+  // Session verification on mount
+  useEffect(() => {
+    const token = localStorage.getItem('roadnex_token');
+    if (token) {
+      fetch('/api/auth/verify', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setCurrentUser(data.user);
+        } else {
+          localStorage.removeItem('roadnex_token');
+          localStorage.removeItem('roadnex_user');
+          setCurrentUser(null);
+        }
+      })
+      .catch(err => {
+        console.error('Session verify error:', err);
+        localStorage.removeItem('roadnex_token');
+        localStorage.removeItem('roadnex_user');
+        setCurrentUser(null);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+    } else {
+      setLoading(false);
+    }
+  }, []);
+
+  // Load and live-poll persisted data from PostgreSQL once authenticated
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const token = localStorage.getItem('roadnex_token');
+    if (!token) return;
+
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const loadFreshData = () => {
+      Promise.allSettled([
+        fetch('/api/reports',     { headers }).then(r => r.json()),
+        fetch('/api/complaints',  { headers }).then(r => r.json()),
+        fetch('/api/work-orders', { headers }).then(r => r.json()),
+      ]).then(([repRes, cmpRes, woRes]) => {
+        if (repRes.status === 'fulfilled' && repRes.value?.success && Array.isArray(repRes.value?.reports)) {
+          const apiDefects = repRes.value.reports.map(r => ({
+            id:           r.id,
+            location:     r.location,
+            type:         r.defectType,
+            severity:     r.severity,
+            confidence:   r.confidence,
+            area:         r.area,
+            depth:        r.depth,
+            complaints:   1,
+            waterlogging: r.waterlogging !== 'N/A',
+            priorityScore: r.priorityScore,
+            lat:          r.lat,
+            lng:          r.lng,
+            reportedDate: r.createdAt,
+            status:       r.status,
+            imageUrl:     r.imageUrl,
+            citizenName:  r.citizenName,
+            isMyUpload:   r.userId === currentUser.id,
+            state:        r.state,
+            district:     r.district,
+          }));
+          setDefects(prev => {
+            const map = new Map(prev.map(d => [d.id, d]));
+            apiDefects.forEach(d => map.set(d.id, { ...map.get(d.id), ...d }));
+            return Array.from(map.values());
+          });
+        }
+
+        if (cmpRes.status === 'fulfilled' && cmpRes.value?.success && Array.isArray(cmpRes.value?.complaints)) {
+          const apiComplaints = cmpRes.value.complaints.map(c => ({
+            id:              c.id,
+            reportId:        c.reportId,
+            userId:          c.userId,
+            citizenName:     c.citizenName || 'Citizen User',
+            citizenPhone:    c.citizenPhone || '',
+            citizenAddress:  c.citizenAddress || '',
+            citizenEmail:    c.citizenEmail || '',
+            description:     c.description,
+            location:        c.location,
+            image:           c.image || 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?w=500&auto=format&fit=crop&q=60',
+            date:            c.date,
+            status:          c.status,
+            severity:        c.severity || 'Medium',
+            priorityScore:   c.priorityScore || 50,
+            defectType:      c.defectType || 'Pothole',
+            confidence:      c.confidence || 0,
+            lat:             c.lat || 16.222,
+            lng:             c.lng || 80.444,
+            aiSimilarity:    c.aiSimilarity,
+            matchedDefectId: c.matchedDefectId,
+            isMerged:        c.isMerged,
+            isMyUpload:      c.userId === currentUser.id,
+            repairedImageUrl: c.repairedImageUrl,
+            repairedAt:       c.repairedAt,
+            assignedStaff:    c.assignedStaff
+          }));
+          setComplaints(prev => {
+            const map = new Map(prev.map(c => [c.id, c]));
+            apiComplaints.forEach(c => map.set(c.id, { ...map.get(c.id), ...c }));
+            return Array.from(map.values());
+          });
+        }
+
+        if (woRes.status === 'fulfilled' && woRes.value?.success && Array.isArray(woRes.value?.workOrders)) {
+          const apiWorkOrders = woRes.value.workOrders.map(w => ({
+            id:               w.id,
+            defectId:         w.defectId,
+            defectType:       w.defectType,
+            location:         w.location,
+            lat:              w.lat,
+            lng:              w.lng,
+            severity:         w.severity,
+            priority:         w.priority,
+            priorityScore:    w.priorityScore,
+            status:           w.status,
+            contractor:       w.contractor,
+            targetCompletion: w.targetCompletion || '7 days',
+            estimatedCost:    w.estimatedCost,
+            repairedImageUrl: w.repairedImageUrl,
+            repairedAt:       w.repairedAt,
+          }));
+          setWorkOrders(prev => {
+            const map = new Map(prev.map(w => [w.id, w]));
+            apiWorkOrders.forEach(w => map.set(w.id, { ...map.get(w.id), ...w }));
+            return Array.from(map.values());
+          });
+        }
+
+        setDataLoaded(true);
+      }).catch(err => console.warn('[App Data Polling Warning]', err));
+    };
+
+    loadFreshData();
+    const intervalId = setInterval(loadFreshData, 3000);
+    return () => clearInterval(intervalId);
+  }, [currentUser]);
+
+  const triggerToast = (msg, type = 'success') => {
+    setToastMessage(msg);
+    setToastType(type);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3500);
+  };
+
+  const handleLogin = (user, token) => {
+    localStorage.setItem('roadnex_token', token);
+    localStorage.setItem('roadnex_user', JSON.stringify(user));
+    setCurrentUser(user);
+    const roleLabel = user.role === 'admin' 
+      ? 'Municipal Admin' 
+      : user.role === 'municipal' 
+        ? 'Municipal Operator' 
+        : 'Citizen User';
+    triggerToast(`Welcome ${user.name}! Logged in as ${roleLabel}.`);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('roadnex_token');
+    localStorage.removeItem('roadnex_user');
+    setCurrentUser(null);
+    triggerToast('Logged out cleanly. Session closed.');
+    navigate('/');
+  };
+
+  const handleUpdateStatus = (defectId, newStatus) => {
+    setDefects((prev) =>
+      prev.map((d) => (d.id === defectId ? { ...d, status: newStatus } : d))
+    );
+    setWorkOrders((prev) =>
+      prev.map((w) => (w.defectId === defectId ? { ...w, status: newStatus } : w))
+    );
+    setComplaints((prev) =>
+      prev.map((c) => (c.reportId === defectId ? { ...c, status: newStatus } : c))
+    );
+  };
+
+  const handleVerifyRepair = async (woId, action) => {
+    try {
+      const token = localStorage.getItem('roadnex_token');
+      const res = await fetch(`/api/work-orders/${woId}/verify-repair`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ action })
+      });
+      const data = await res.json();
+      if (data.success) {
+        // Update workOrders state
+        setWorkOrders((prev) => 
+          prev.map((w) => w.id === woId ? { ...w, status: action === 'Approve' ? 'Completed' : 'Pending' } : w)
+        );
+        // If approved, update defects state too
+        if (action === 'Approve') {
+          const matchedWO = workOrders.find((w) => w.id === woId);
+          if (matchedWO && matchedWO.defectId) {
+            setDefects((prev) => 
+              prev.map((d) => d.id === matchedWO.defectId ? { ...d, status: 'Resolved' } : d)
+            );
+            setComplaints((prev) => 
+              prev.map((c) => c.reportId === matchedWO.defectId ? { ...c, status: 'Resolved' } : c)
+            );
+          }
+        }
+        return true;
+      }
+    } catch (err) {
+      console.error('[Verify Repair Error]', err);
+    }
+    return false;
+  };
+
+  const handleMergeComplaint = async (complaintId, matchedDefectId) => {
+    // Optimistic update
+    setComplaints((prev) =>
+      prev.map((c) =>
+        c.id === complaintId ? { ...c, status: `Merged into ${matchedDefectId}` } : c
+      )
+    );
+    // Persist to PostgreSQL
+    try {
+      const token = localStorage.getItem('roadnex_token');
+      await fetch(`/api/complaints/${complaintId}/merge`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ matchedDefectId }),
+      });
+    } catch (err) {
+      console.warn('[App] Failed to persist merge to DB:', err);
+    }
+  };
+
+  const handleDeleteComplaint = async (complaintId) => {
+    // Optimistic update
+    setComplaints((prev) => prev.filter((c) => c.id !== complaintId));
+
+    try {
+      const token = localStorage.getItem('roadnex_token');
+      const res = await fetch(`/api/complaints/${complaintId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to delete complaint from server.');
+      }
+      triggerToast('Complaint deleted successfully.');
+    } catch (err) {
+      console.warn('[App] Failed to delete complaint from DB:', err);
+      triggerToast(err.message || 'Failed to delete complaint.', 'warning');
+    }
+  };
+
+  const handleUpdateComplaint = (updatedCmp) => {
+    setComplaints((prev) => prev.map((c) => c.id === updatedCmp.id ? updatedCmp : c));
+  };
+
+  const handleCreateWorkOrder = async (woDetails) => {
+    try {
+      const token = localStorage.getItem('roadnex_token');
+      const res = await fetch('/api/work-orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(woDetails)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWorkOrders((prev) => [data.workOrder, ...prev]);
+        return data.workOrder;
+      }
+    } catch (err) {
+      console.error('[App] Failed to create work order:', err);
+    }
+    return null;
+  };
+
+  const handleAddWorkOrder = async (newOrder) => {
+    // Optimistic local update
+    setWorkOrders((prev) => [newOrder, ...prev]);
+
+    const newComplaint = {
+      id: 'C-' + Math.floor(2000 + Math.random() * 1000),
+      citizenName: currentUser?.name || 'Citizen',
+      location: newOrder.location,
+      image: newOrder.imageUrl || 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?w=500&auto=format&fit=crop&q=60',
+      date: new Date().toLocaleString(),
+      description: `Reported ${newOrder.type} at ${newOrder.location}. Severity: ${newOrder.severity}.`,
+      aiSimilarity: 0,
+      matchedDefectId: newOrder.id,
+      status: 'Reported',
+      isMerged: false,
+      isMyUpload: true
+    };
+    setComplaints((prev) => [newComplaint, ...prev]);
+
+    const newDefect = {
+      id: newOrder.id,
+      location: newOrder.location,
+      type: newOrder.type,
+      severity: newOrder.severity,
+      confidence: newOrder.confidence || 96,
+      area: newOrder.area || '2.4 m²',
+      depth: newOrder.depth || '12 cm',
+      complaints: 1,
+      waterlogging: true,
+      priorityScore: newOrder.priorityScore || 92,
+      lat: newOrder.lat,
+      lng: newOrder.lng,
+      reportedDate: newOrder.date,
+      status: newOrder.status,
+      imageUrl: newOrder.imageUrl,
+      isMyUpload: true,
+      state: newOrder.state,
+      district: newOrder.district,
+    };
+    setDefects((prev) => [newDefect, ...prev]);
+
+    // Persist to PostgreSQL
+    try {
+      const token = localStorage.getItem('roadnex_token');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      // 1. Save report
+      const repRes = await fetch('/api/reports', {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          defectType:    newOrder.type,
+          severity:      newOrder.severity,
+          confidence:    newOrder.confidence || 96,
+          priorityScore: newOrder.priorityScore || 92,
+          area:          newOrder.area || '2.4 m²',
+          depth:         newOrder.depth || '12 cm',
+          waterlogging:  'Detected',
+          location:      newOrder.location,
+          lat:           newOrder.lat,
+          lng:           newOrder.lng,
+          imageUrl:      newOrder.imageUrl || null,
+          aiAssessment:  newOrder.assessment || null,
+          isPothole:     true,
+          state:         newOrder.state || null,
+          district:      newOrder.district || null,
+        })
+      }).then(r => r.json());
+
+      const savedReportId = repRes.success ? repRes.report.id : null;
+
+      // 2. Save work order
+      await fetch('/api/work-orders', {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          reportId:      savedReportId,
+          defectId:      newOrder.id,
+          defectType:    newOrder.type,
+          location:      newOrder.location,
+          lat:           newOrder.lat,
+          lng:           newOrder.lng,
+          severity:      newOrder.severity,
+          priority:      'High',
+          priorityScore: newOrder.priorityScore || 92,
+          contractor:    'Unassigned',
+          estimatedCost: '₹0',
+        })
+      });
+    } catch (err) {
+      console.warn('[App] Failed to persist work order to DB:', err);
+    }
+  };
+
+  const handleMarkAllRead = () => {
+    setNotifications([]);
+  };
+
+  // 1. Loader screen when session checking is active
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center space-y-4">
+        <div className="w-12 h-12 rounded-full border-4 border-cyan-500/20 border-t-cyan-400 animate-spin"></div>
+        <p className="text-xs text-slate-400 font-mono tracking-wider animate-pulse">INITIALIZING ROADNEX...</p>
+      </div>
+    );
+  }
+
+  // Determine if active route is public
+  const isPublicRoute = ['/', '/roadex', '/agents', '/admin/agents', '/login', '/register', '/forgot-password', '/admin/login', '/municipal/login', '/municipal/register'].includes(location.pathname);
+
+  // Helper redirect target based on user role
+  const getDashboardRedirect = (user) => {
+    if (!user) return '/';
+    if (user.role === 'admin') return '/admin/dashboard';
+    if (user.role === 'municipal') return '/municipal/dashboard';
+    return '/user/dashboard';
+  };
+
+  // 2. Render public layout (no sidebar/header)
+  if (isPublicRoute) {
+    return (
+      <>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/roadex" element={<RoadexPage />} />
+          <Route path="/agents" element={<AgentControlCenterPage />} />
+          <Route path="/login" element={
+            currentUser ? <Navigate to={getDashboardRedirect(currentUser)} replace /> : <LoginPage onLogin={handleLogin} />
+          } />
+          <Route path="/register" element={
+            currentUser ? <Navigate to={getDashboardRedirect(currentUser)} replace /> : <RegisterPage onLogin={handleLogin} />
+          } />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/admin/login" element={
+            currentUser ? <Navigate to={getDashboardRedirect(currentUser)} replace /> : <AdminLoginPage onLogin={handleLogin} />
+          } />
+          <Route path="/municipal/login" element={
+            currentUser ? <Navigate to={getDashboardRedirect(currentUser)} replace /> : <MunicipalLoginPage onLogin={handleLogin} />
+          } />
+          <Route path="/municipal/register" element={
+            currentUser ? <Navigate to={getDashboardRedirect(currentUser)} replace /> : <MunicipalRegisterPage onLogin={handleLogin} />
+          } />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+
+        <Toast
+          message={toastMessage}
+          type={toastType}
+          onClose={() => setToastMessage(null)}
+        />
+      </>
+    );
+  }
+
+  const handleUpdateProfile = (updatedUser) => {
+    setCurrentUser(updatedUser);
+    localStorage.setItem('roadnex_user', JSON.stringify(updatedUser));
+  };
+
+  // 3. Render private authenticated layout (with Sidebar and Header)
+  return (
+    <div className="flex min-h-screen bg-custom-cream text-custom-taupe font-sans">
+      {/* Sidebar Navigation */}
+      <Sidebar currentUser={currentUser} onLogout={handleLogout} />
+
+      {/* Main content grid */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <Header
+          currentUser={currentUser}
+          onLogout={handleLogout}
+          unreadCount={notifications.length}
+          notifications={notifications}
+          onMarkAllRead={handleMarkAllRead}
+          onUpdateProfile={handleUpdateProfile}
+        />
+
+        <main className="flex-1 overflow-y-auto">
+          <Routes>
+            {/* Protected Citizen Routes */}
+            <Route path="/user/dashboard" element={
+              <ProtectedRoute allowedRole="user" currentUser={currentUser} loading={loading}>
+                <UserDashboardPage complaints={complaints} currentUser={currentUser} onTriggerToast={triggerToast} />
+              </ProtectedRoute>
+            } />
+            <Route path="/user/report" element={
+              <ProtectedRoute allowedRole="user" currentUser={currentUser} loading={loading}>
+                <RoadAnalysisPage onTriggerToast={triggerToast} onAddWorkOrder={handleAddWorkOrder} />
+              </ProtectedRoute>
+            } />
+            <Route path="/user/my-reports" element={
+              <ProtectedRoute allowedRole="user" currentUser={currentUser} loading={loading}>
+                <ComplaintsPage complaints={complaints} onMergeComplaint={handleMergeComplaint} onDeleteComplaint={handleDeleteComplaint} onUpdateComplaint={handleUpdateComplaint} onCreateWorkOrder={handleCreateWorkOrder} onTriggerToast={triggerToast} currentUser={currentUser} />
+              </ProtectedRoute>
+            } />
+            <Route path="/user/map" element={
+              <ProtectedRoute allowedRole="user" currentUser={currentUser} loading={loading}>
+                <GisMapPage defects={defects} onUpdateStatus={handleUpdateStatus} onTriggerToast={triggerToast} currentUser={currentUser} />
+              </ProtectedRoute>
+            } />
+            <Route path="/user/settings" element={
+              <ProtectedRoute allowedRole="user" currentUser={currentUser} loading={loading}>
+                <SettingsPage onTriggerToast={triggerToast} currentUser={currentUser} onUpdateProfile={handleUpdateProfile} />
+              </ProtectedRoute>
+            } />
+
+            {/* Protected Admin Routes */}
+            <Route path="/admin/dashboard" element={
+              <ProtectedRoute allowedRole="admin" currentUser={currentUser} loading={loading}>
+                <DashboardPage defects={defects} workOrders={workOrders} onVerifyRepair={handleVerifyRepair} onUpdateStatus={handleUpdateStatus} onTriggerToast={triggerToast} />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/reports" element={
+              <ProtectedRoute allowedRole="admin" currentUser={currentUser} loading={loading}>
+                <ComplaintsPage complaints={complaints} onMergeComplaint={handleMergeComplaint} onDeleteComplaint={handleDeleteComplaint} onUpdateComplaint={handleUpdateComplaint} onCreateWorkOrder={handleCreateWorkOrder} onTriggerToast={triggerToast} currentUser={currentUser} />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/map" element={
+              <ProtectedRoute allowedRole="admin" currentUser={currentUser} loading={loading}>
+                <GisMapPage defects={defects} onUpdateStatus={handleUpdateStatus} onTriggerToast={triggerToast} currentUser={currentUser} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/admin/analytics" element={
+              <ProtectedRoute allowedRole="admin" currentUser={currentUser} loading={loading}>
+                <AnalyticsPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/settings" element={
+              <ProtectedRoute allowedRole="admin" currentUser={currentUser} loading={loading}>
+                <SettingsPage onTriggerToast={triggerToast} currentUser={currentUser} onUpdateProfile={handleUpdateProfile} />
+              </ProtectedRoute>
+            } />
+
+            {/* Protected Municipal Routes */}
+            <Route path="/municipal/dashboard" element={
+              <ProtectedRoute allowedRole="municipal" currentUser={currentUser} loading={loading}>
+                <MunicipalDashboardPage onTriggerToast={triggerToast} />
+              </ProtectedRoute>
+            } />
+            <Route path="/municipal/settings" element={
+              <ProtectedRoute allowedRole="municipal" currentUser={currentUser} loading={loading}>
+                <SettingsPage onTriggerToast={triggerToast} currentUser={currentUser} onUpdateProfile={handleUpdateProfile} />
+              </ProtectedRoute>
+            } />
+
+            {/* Catch-all Auth Redirect */}
+            <Route path="*" element={
+              currentUser ? (
+                <Navigate to={
+                  currentUser.role === 'admin' 
+                    ? '/admin/dashboard' 
+                    : currentUser.role === 'municipal' 
+                      ? '/municipal/dashboard' 
+                      : '/user/dashboard'
+                } replace />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            } />
+          </Routes>
+        </main>
+      </div>
+
+      {/* Global Toast Alerts */}
+      <Toast
+        message={toastMessage}
+        type={toastType}
+        onClose={() => setToastMessage(null)}
+      />
+    </div>
+  );
+}
